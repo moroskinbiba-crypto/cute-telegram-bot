@@ -46,16 +46,15 @@ function randomMessage() {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-function tgUrl(token, method) {
-  return `https://api.telegram.org/bot${token}/${method}`;
-}
-
 async function telegram(token, method, body) {
-  const response = await fetch(tgUrl(token, method), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await fetch(
+    `https://api.telegram.org/bot${token}/${method}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 
   const data = await response.json();
   if (!data.ok) {
@@ -88,12 +87,32 @@ async function removeSubscriber(env, chatId) {
 
 async function getSubscribers(env) {
   const response = await subscribers(env).fetch("https://do/list");
-  return await response.json();
+  return response.json();
+}
+
+async function getWebhookSecret(env) {
+  return subscribers(env).fetch("https://do/webhook-secret").then((response) => response.text());
+}
+
+async function ensureWebhook(env, origin) {
+  const secret = await getWebhookSecret(env);
+  const webhookUrl = `${origin}/telegram`;
+
+  await telegram(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
+    url: webhookUrl,
+    secret_token: secret,
+    allowed_updates: ["message"],
+    drop_pending_updates: false,
+  });
+
+  return webhookUrl;
 }
 
 async function webhookUpdate(request, env) {
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-  if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
+  const expectedSecret = await getWebhookSecret(env);
+
+  if (!secret || secret !== expectedSecret) {
     return new Response("Unauthorized", { status: 401 });
   }
 
@@ -156,49 +175,42 @@ async function broadcast(env) {
   }
 }
 
-async function setupWebhook(request, env) {
-  if (request.headers.get("X-Setup-Secret") !== env.WEBHOOK_SETUP_SECRET) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const url = new URL(request.url);
-  const webhookUrl = `${url.origin}/telegram`;
-
-  await telegram(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
-    url: webhookUrl,
-    secret_token: env.TELEGRAM_WEBHOOK_SECRET,
-    allowed_updates: ["message"],
-    drop_pending_updates: false,
-  });
-
-  return Response.json({ ok: true, webhook: webhookUrl });
-}
-
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("Cute Telegram Bot is alive 💕");
+      try {
+        const webhookUrl = await ensureWebhook(env, url.origin);
+        return new Response(`Cute Telegram Bot is alive 💕 Webhook: ${webhookUrl}`);
+      } catch (error) {
+        return new Response(`Bot setup error: ${error.message}`, { status: 500 });
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/telegram") {
       return webhookUpdate(request, env);
     }
 
-    if (request.method === "POST" && url.pathname === "/setup") {
-      return setupWebhook(request, env);
-    }
-
     if (request.method === "GET" && url.pathname === "/health") {
-      return Response.json({ ok: true });
+      try {
+        await ensureWebhook(env, url.origin);
+        return Response.json({ ok: true, webhook: `${url.origin}/telegram` });
+      } catch (error) {
+        return Response.json({ ok: false, error: error.message }, { status: 500 });
+      }
     }
 
     return new Response("Not found", { status: 404 });
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(broadcast(env));
+    ctx.waitUntil(
+      (async () => {
+        await ensureWebhook(env, new URL(controller.cron ? "https://cute-telegram-bot.dssmirnov2.workers.dev" : "https://cute-telegram-bot.dssmirnov2.workers.dev").origin);
+        await broadcast(env);
+      })(),
+    );
   },
 };
 
@@ -227,6 +239,15 @@ export class Subscribers extends DurableObject {
       const entries = await this.ctx.storage.list({ prefix: "subscriber:" });
       const chatIds = [...entries.keys()].map((key) => key.slice("subscriber:".length));
       return Response.json(chatIds);
+    }
+
+    if (request.method === "GET" && url.pathname === "/webhook-secret") {
+      let secret = await this.ctx.storage.get("webhook-secret");
+      if (!secret) {
+        secret = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+        await this.ctx.storage.put("webhook-secret", secret);
+      }
+      return new Response(secret);
     }
 
     return new Response("Not found", { status: 404 });
