@@ -222,14 +222,15 @@ def send_to_all(chat_ids):
     )[0]
     text = random.choice(message_pool)
 
-    active_chat_ids = set()
+    active_chat_ids = set(chat_ids)
     for chat_id in sorted(chat_ids):
         try:
             send(chat_id, text)
-            active_chat_ids.add(chat_id)
             print(f"Sent to {chat_id}")
         except RuntimeError as exc:
             print(f"Could not send to {chat_id}: {exc}")
+            if "Telegram HTTP 403" in str(exc):
+                active_chat_ids.discard(chat_id)
 
     save_chat_ids(active_chat_ids)
 
