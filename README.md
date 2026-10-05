@@ -49,7 +49,7 @@ Cloudflare Workers поддерживает Cron Triggers, а SQLite Durable Obj
 
 API Token должен иметь разрешение **Workers Scripts: Edit** для нужного аккаунта.
 
-### 3. Добавь три GitHub Secrets
+### 3. Добавь два GitHub Secrets
 
 В:
 
@@ -60,7 +60,6 @@ API Token должен иметь разрешение **Workers Scripts: Edit**
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
 
-Для последних двух можно использовать любые длинные случайные строки.
 
 `TELEGRAM_BOT_TOKEN` уже используется из существующего секрета.
 
