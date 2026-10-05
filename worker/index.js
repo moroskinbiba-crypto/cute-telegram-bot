@@ -236,11 +236,13 @@ async function webhookUpdate(request, env) {
 
 async function broadcast(env) {
   const chatIds = await getDueSubscribers(env);
+  console.log(`Cron broadcast: ${chatIds.length} subscriber(s) due`);
 
   for (const chatId of chatIds) {
     try {
       await sendCuteMessage(env, chatId);
       await markSent(env, chatId);
+      console.log(`Sent scheduled message to ${chatId}`);
     } catch (error) {
       if (error.telegramStatus === 403) {
         await removeSubscriber(env, chatId);
