@@ -140,7 +140,7 @@ async function webhookUpdate(request, env) {
   if (text.startsWith("/start")) {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
-      text: "Привет 💕 Я здесь. Теперь ты официально в списке тех, кому иногда прилетает немного тепла. А конкретно тебе — потому что ты самая важная 😽",
+      text: "Привет, Мурочка 💕",
     });
   } else if (text.startsWith("/now")) {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
