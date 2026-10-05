@@ -313,6 +313,8 @@ export class Subscribers extends DurableObject {
     if (request.method === "POST" && url.pathname === "/remove") {
       const { chatId } = await request.json();
       await this.ctx.storage.delete(`subscriber:${chatId}`);
+      await this.ctx.storage.delete(`frequency:${chatId}`);
+      await this.ctx.storage.delete(`lastSent:${chatId}`);
       return Response.json({ ok: true });
     }
 
