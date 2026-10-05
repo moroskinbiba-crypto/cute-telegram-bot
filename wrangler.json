@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cute-telegram-bot",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-05",
+  "triggers": {
+    "crons": ["0 */3 * * *"]
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SUBSCRIBERS",
+        "class_name": "Subscribers"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Subscribers"]
+    }
+  ]
+}
