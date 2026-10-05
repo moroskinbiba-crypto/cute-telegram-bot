@@ -66,31 +66,31 @@ async function telegram(token, method, body) {
   return data.result;
 }
 
-function subscriberStore(env) {
+function subscribers(env) {
   const id = env.SUBSCRIBERS.idFromName("main");
   return env.SUBSCRIBERS.get(id);
 }
 
-async function setRecipient(env, chatId) {
-  await subscriberStore(env).fetch("https://do/set-recipient", {
+async function addSubscriber(env, chatId) {
+  await subscribers(env).fetch("https://do/add", {
     method: "POST",
     body: JSON.stringify({ chatId: String(chatId) }),
   });
 }
 
-async function removeRecipient(env) {
-  await subscriberStore(env).fetch("https://do/remove-recipient", {
+async function removeSubscriber(env, chatId) {
+  await subscribers(env).fetch("https://do/remove", {
     method: "POST",
+    body: JSON.stringify({ chatId: String(chatId) }),
   });
 }
 
-async function getRecipient(env) {
-  const response = await subscriberStore(env).fetch("https://do/recipient");
+async function getSubscribers(env) {
+  const response = await subscribers(env).fetch("https://do/list");
   return response.json();
 }
 
 async function getWebhookSecret(env) {
-
   return subscribers(env).fetch("https://do/webhook-secret").then((response) => response.text());
 }
 
@@ -127,10 +127,7 @@ async function webhookUpdate(request, env) {
   const text = (message.text || "").trim();
 
   if (text.startsWith("/stop")) {
-    const recipient = await getRecipient(env);
-    if (String(recipient.chatId || "") === chatId) {
-      await removeRecipient(env);
-    }
+    await removeSubscriber(env, chatId);
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
       text: "Хорошо 💛 Я больше не буду присылать сообщения. Если соскучишься — просто нажми /start.",
@@ -138,12 +135,12 @@ async function webhookUpdate(request, env) {
     return Response.json({ ok: true });
   }
 
-  await setRecipient(env, chatId);
+  await addSubscriber(env, chatId);
 
   if (text.startsWith("/start")) {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
-      text: "Привет, Мурочка 💕 Я здесь. Теперь у меня есть один-единственный получатель — ты. Никаких списков, только персональные сообщения для тебя 😽",
+      text: "Привет 💕 Я здесь. Теперь ты официально в списке тех, кому иногда прилетает немного тепла. А конкретно тебе — потому что ты самая важная 😽",
     });
   } else if (text.startsWith("/now")) {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
@@ -161,24 +158,20 @@ async function webhookUpdate(request, env) {
 }
 
 async function broadcast(env) {
-  const recipient = await getRecipient(env);
-  const chatId = recipient.chatId;
+  const chatIds = await getSubscribers(env);
 
-  if (!chatId) {
-    console.log("No recipient yet.");
-    return;
-  }
-
-  try {
-    await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-      chat_id: chatId,
-      text: randomMessage(),
-    });
-  } catch (error) {
-    if (error.telegramStatus === 403) {
-      await removeRecipient(env);
+  for (const chatId of chatIds) {
+    try {
+      await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: randomMessage(),
+      });
+    } catch (error) {
+      if (error.telegramStatus === 403) {
+        await removeSubscriber(env, chatId);
+      }
+      console.log(`Failed to send to ${chatId}: ${error.message}`);
     }
-    console.log(`Failed to send to ${chatId}: ${error.message}`);
   }
 }
 
@@ -230,20 +223,22 @@ export class Subscribers extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
 
-    if (request.method === "POST" && url.pathname === "/set-recipient") {
+    if (request.method === "POST" && url.pathname === "/add") {
       const { chatId } = await request.json();
-      await this.ctx.storage.put("recipient", String(chatId));
+      await this.ctx.storage.put(`subscriber:${chatId}`, true);
       return Response.json({ ok: true });
     }
 
-    if (request.method === "POST" && url.pathname === "/remove-recipient") {
-      await this.ctx.storage.delete("recipient");
+    if (request.method === "POST" && url.pathname === "/remove") {
+      const { chatId } = await request.json();
+      await this.ctx.storage.delete(`subscriber:${chatId}`);
       return Response.json({ ok: true });
     }
 
-    if (request.method === "GET" && url.pathname === "/recipient") {
-      const chatId = await this.ctx.storage.get("recipient");
-      return Response.json({ chatId: chatId || null });
+    if (request.method === "GET" && url.pathname === "/list") {
+      const entries = await this.ctx.storage.list({ prefix: "subscriber:" });
+      const chatIds = [...entries.keys()].map((key) => key.slice("subscriber:".length));
+      return Response.json(chatIds);
     }
 
     if (request.method === "GET" && url.pathname === "/webhook-secret") {
