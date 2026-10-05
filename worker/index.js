@@ -283,7 +283,6 @@ export default {
   async scheduled(_controller, env, ctx) {
     ctx.waitUntil(broadcast(env));
   },
-  },
 };
 
 export class Subscribers extends DurableObject {
