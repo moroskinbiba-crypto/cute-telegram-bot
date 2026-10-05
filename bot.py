@@ -1,10 +1,10 @@
+import json
 import os
 import random
 import urllib.parse
 import urllib.request
 
 TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 MESSAGES = [
     "Просто напоминаю: ты сегодня уже достаточно молодец 💛",
@@ -21,18 +21,40 @@ MESSAGES = [
     "Если сегодня было тяжело — это не значит, что завтра будет таким же 🌙",
 ]
 
-def send_message(text: str) -> None:
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({
-        "chat_id": CHAT_ID,
-        "text": text,
-    }).encode("utf-8")
-
+def api(method, params=None):
+    url = f"https://api.telegram.org/bot{TOKEN}/{method}"
+    data = urllib.parse.urlencode(params or {}).encode("utf-8")
     with urllib.request.urlopen(url, data=data, timeout=20) as response:
-        body = response.read().decode("utf-8")
-        if '"ok":true' not in body:
-            raise RuntimeError(f"Telegram API error: {body}")
+        result = json.load(response)
+    if not result.get("ok"):
+        raise RuntimeError(f"Telegram API error: {result}")
+    return result["result"]
+
+def send(chat_id, text):
+    api("sendMessage", {"chat_id": chat_id, "text": text})
+
+def get_chat_id():
+    updates = api("getUpdates", {"timeout": 0, "allowed_updates": json.dumps(["message"])})
+    candidates = []
+    for update in updates:
+        message = update.get("message", {})
+        text = message.get("text", "")
+        if text.startswith("/start"):
+            chat = message.get("chat", {})
+            if chat.get("id") is not None:
+                candidates.append((update.get("update_id", 0), chat["id"]))
+    if not candidates:
+        return None
+    return candidates[-1][1]
 
 if __name__ == "__main__":
-    send_message(random.choice(MESSAGES))
-    print("Cute message sent successfully 💕")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        chat_id = get_chat_id()
+
+    if not chat_id:
+        print("No /start found yet. Ask the recipient to send /start to the bot.")
+        raise SystemExit(0)
+
+    send(chat_id, random.choice(MESSAGES))
+    print(f"Cute message sent to chat {chat_id} 💕")
