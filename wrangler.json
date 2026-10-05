@@ -4,7 +4,7 @@
   "main": "worker/index.js",
   "compatibility_date": "2026-10-05",
   "triggers": {
-    "crons": ["0 */3 * * *"]
+    "crons": ["*/30 * * * *"]
   },
   "durable_objects": {
     "bindings": [
