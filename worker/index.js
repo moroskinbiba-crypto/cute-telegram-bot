@@ -147,7 +147,7 @@ async function ensureWebhook(env, origin) {
   await telegram(env.TELEGRAM_BOT_TOKEN, "setWebhook", {
     url: webhookUrl,
     secret_token: secret,
-    allowed_updates: ["message"],
+    allowed_updates: ["message", "callback_query"],
     drop_pending_updates: false,
   });
 
@@ -213,10 +213,7 @@ async function webhookUpdate(request, env) {
   await addSubscriber(env, chatId);
 
   if (text.startsWith("/start")) {
-    await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-      chat_id: chatId,
-      text: "Привет, Мурочка 💕",
-    });
+    await sendMenu(env, chatId, "Привет, Мурочка 💕");
   } else if (text.startsWith("/now")) {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
