@@ -59,8 +59,6 @@ API Token должен иметь разрешение **Workers Scripts: Edit**
 
 - `CLOUDFLARE_ACCOUNT_ID`
 - `CLOUDFLARE_API_TOKEN`
-- `TELEGRAM_WEBHOOK_SECRET`
-- `WEBHOOK_SETUP_SECRET`
 
 Для последних двух можно использовать любые длинные случайные строки.
 
