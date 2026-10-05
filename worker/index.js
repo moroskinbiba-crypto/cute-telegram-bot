@@ -78,6 +78,52 @@ async function addSubscriber(env, chatId) {
   });
 }
 
+async function setFrequency(env, chatId, minutes) {
+  await subscribers(env).fetch("https://do/frequency", {
+    method: "POST",
+    body: JSON.stringify({ chatId: String(chatId), minutes }),
+  });
+}
+
+async function getDueSubscribers(env) {
+  const response = await subscribers(env).fetch("https://do/due");
+  return response.json();
+}
+
+async function markSent(env, chatId) {
+  await subscribers(env).fetch("https://do/mark-sent", {
+    method: "POST",
+    body: JSON.stringify({ chatId: String(chatId) }),
+  });
+}
+
+async function sendMenu(env, chatId, text = "Выбирай, Мурочка 💕") {
+  return telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: "⏰ Поменять частоту", callback_data: "frequency" }],
+        [{ text: "💌 Получить сейчас", callback_data: "now" }],
+      ],
+    },
+  });
+}
+
+async function sendFrequencyMenu(env, chatId) {
+  return telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+    chat_id: chatId,
+    text: "Как часто мне заглядывать к тебе? 💕",
+    reply_markup: {
+      inline_keyboard: [[
+        { text: "30 минут", callback_data: "freq:30" },
+        { text: "1 час", callback_data: "freq:60" },
+        { text: "3 часа", callback_data: "freq:180" },
+      ]],
+    },
+  });
+}
+
 async function removeSubscriber(env, chatId) {
   await subscribers(env).fetch("https://do/remove", {
     method: "POST",
@@ -117,6 +163,35 @@ async function webhookUpdate(request, env) {
   }
 
   const update = await request.json();
+
+  if (update.callback_query) {
+    const callback = update.callback_query;
+    const chatId = String(callback.message?.chat?.id || "");
+    if (!chatId) return Response.json({ ok: true });
+
+    await telegram(env.TELEGRAM_BOT_TOKEN, "answerCallbackQuery", {
+      callback_query_id: callback.id,
+    });
+
+    await addSubscriber(env, chatId);
+    if (callback.data === "frequency") {
+      await sendFrequencyMenu(env, chatId);
+    } else if (callback.data === "now") {
+      await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: randomMessage(),
+      });
+    } else if (callback.data?.startsWith("freq:")) {
+      const minutes = Number(callback.data.slice(5));
+      if ([30, 60, 180].includes(minutes)) {
+        await setFrequency(env, chatId, minutes);
+        const label = minutes === 30 ? "30 минут" : minutes === 60 ? "1 час" : "3 часа";
+        await sendMenu(env, chatId, `Готово 💕 Теперь буду заглядывать каждые ${label}.`);
+      }
+    }
+    return Response.json({ ok: true });
+  }
+
   const message = update.message;
 
   if (!message || !message.chat || message.chat.type !== "private") {
@@ -147,6 +222,7 @@ async function webhookUpdate(request, env) {
       chat_id: chatId,
       text: randomMessage(),
     });
+    await sendMenu(env, chatId);
   } else {
     await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
       chat_id: chatId,
@@ -158,7 +234,7 @@ async function webhookUpdate(request, env) {
 }
 
 async function broadcast(env) {
-  const chatIds = await getSubscribers(env);
+  const chatIds = await getDueSubscribers(env);
 
   for (const chatId of chatIds) {
     try {
@@ -166,6 +242,7 @@ async function broadcast(env) {
         chat_id: chatId,
         text: randomMessage(),
       });
+      await markSent(env, chatId);
     } catch (error) {
       if (error.telegramStatus === 403) {
         await removeSubscriber(env, chatId);
@@ -239,6 +316,32 @@ export class Subscribers extends DurableObject {
       const entries = await this.ctx.storage.list({ prefix: "subscriber:" });
       const chatIds = [...entries.keys()].map((key) => key.slice("subscriber:".length));
       return Response.json(chatIds);
+    }
+
+    if (request.method === "POST" && url.pathname === "/frequency") {
+      const { chatId, minutes } = await request.json();
+      await this.ctx.storage.put(`frequency:${chatId}`, Number(minutes));
+      await this.ctx.storage.put(`lastSent:${chatId}`, Date.now());
+      return Response.json({ ok: true });
+    }
+
+    if (request.method === "GET" && url.pathname === "/due") {
+      const entries = await this.ctx.storage.list({ prefix: "subscriber:" });
+      const now = Date.now();
+      const due = [];
+      for (const key of entries.keys()) {
+        const chatId = key.slice("subscriber:".length);
+        const frequency = Number(await this.ctx.storage.get(`frequency:${chatId}`)) || 180;
+        const lastSent = Number(await this.ctx.storage.get(`lastSent:${chatId}`)) || 0;
+        if (now - lastSent >= frequency * 60 * 1000) due.push(chatId);
+      }
+      return Response.json(due);
+    }
+
+    if (request.method === "POST" && url.pathname === "/mark-sent") {
+      const { chatId } = await request.json();
+      await this.ctx.storage.put(`lastSent:${chatId}`, Date.now());
+      return Response.json({ ok: true });
     }
 
     if (request.method === "GET" && url.pathname === "/webhook-secret") {
