@@ -270,24 +270,19 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/health") {
-      try {
-        await ensureWebhook(env, url.origin);
-        return Response.json({ ok: true, webhook: `${url.origin}/telegram` });
-      } catch (error) {
-        return Response.json({ ok: false, error: error.message }, { status: 500 });
-      }
+      return Response.json({
+        ok: true,
+        webhook: url.origin + "/telegram",
+        cron: "*/30 * * * *",
+      });
     }
 
     return new Response("Not found", { status: 404 });
   },
 
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(
-      (async () => {
-        await ensureWebhook(env, "https://cute-telegram-bot.dssmirnov2.workers.dev");
-        await broadcast(env);
-      })(),
-    );
+    ctx.waitUntil(broadcast(env));
+  },
   },
 };
 
