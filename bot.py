@@ -58,6 +58,7 @@ SURPRISE_MESSAGES = [
     "Киселёнок, это твоё персональное уведомление: кто-то считает тебя очень, очень привлекательной. И кот Тишка пока не возражает 😌🐱",
 ]
 
+
 def api(method, params=None):
     url = f"https://api.telegram.org/bot{TOKEN}/{method}"
     data = urllib.parse.urlencode(params or {}).encode("utf-8")
@@ -105,57 +106,132 @@ def github_api(method, path, payload=None):
         raise RuntimeError(f"GitHub API HTTP {exc.code}: {body_text}") from exc
 
 
-def save_chat_id(chat_id):
-    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
-        print("GitHub variable persistence is unavailable; continuing without saving chat.")
-        return False
-
+def variable_path(name):
     owner, repo = GITHUB_REPOSITORY.split("/", 1)
-    path = f"/repos/{owner}/{repo}/actions/variables/TELEGRAM_CHAT_ID"
-    payload = {"name": "TELEGRAM_CHAT_ID", "value": str(chat_id)}
+    return f"/repos/{owner}/{repo}/actions/variables/{name}"
+
+
+def get_variable(name, default=None):
+    if not GITHUB_TOKEN or not GITHUB_REPOSITORY:
+        return default
 
     try:
-        try:
-            github_api("GET", path)
-            github_api("PATCH", path, payload)
-        except RuntimeError as exc:
-            if "HTTP 404" not in str(exc):
-                raise
-            github_api("POST", f"/repos/{owner}/{repo}/actions/variables", payload)
+        _, result = github_api("GET", variable_path(name))
+        return result.get("value", default)
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            return default
+        raise
 
-        print("Recipient chat saved in GitHub Actions variable.")
-        return True
-    except Exception as exc:
-        print(f"Warning: could not save recipient chat: {exc}")
-        return False
+
+def set_variable(name, value):
+    owner, repo = GITHUB_REPOSITORY.split("/", 1)
+    path = variable_path(name)
+    payload = {"name": name, "value": str(value)}
+
+    try:
+        github_api("GET", path)
+        github_api("PATCH", path, payload)
+    except RuntimeError as exc:
+        if "HTTP 404" not in str(exc):
+            raise
+        github_api("POST", f"/repos/{owner}/{repo}/actions/variables", payload)
+
+
+def load_chat_ids():
+    raw = get_variable("TELEGRAM_CHAT_IDS", "")
+    if raw:
+        try:
+            return {int(chat_id) for chat_id in json.loads(raw)}
+        except (TypeError, ValueError, json.JSONDecodeError):
+            print("Warning: invalid TELEGRAM_CHAT_IDS variable; starting with an empty list.")
+
+    # Migrate the old single-recipient setup if it exists.
+    old_chat_id = get_variable("TELEGRAM_CHAT_ID", "")
+    if old_chat_id:
+        try:
+            return {int(old_chat_id)}
+        except ValueError:
+            pass
+
+    return set()
+
+
+def save_chat_ids(chat_ids):
+    set_variable("TELEGRAM_CHAT_IDS", json.dumps(sorted(chat_ids), separators=(",", ":")))
+    print(f"Saved {len(chat_ids)} recipients.")
+
+
+def load_update_offset():
+    raw = get_variable("TELEGRAM_UPDATE_OFFSET", "0")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+def save_update_offset(offset):
+    set_variable("TELEGRAM_UPDATE_OFFSET", str(offset))
+
+
+def collect_new_chats():
+    offset = load_update_offset()
+    params = {
+        "timeout": 0,
+        "allowed_updates": json.dumps(["message"]),
+    }
+    if offset > 0:
+        params["offset"] = offset
+
+    updates = api("getUpdates", params)
+    chat_ids = set()
+    next_offset = offset
+
+    for update in updates:
+        update_id = update.get("update_id")
+        if isinstance(update_id, int):
+            next_offset = max(next_offset, update_id + 1)
+
+        message = update.get("message", {})
+        text = message.get("text", "")
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+
+        if chat_id is not None and text.startswith("/start"):
+            chat_ids.add(int(chat_id))
+
+    if next_offset != offset:
+        save_update_offset(next_offset)
+
+    return chat_ids
 
 
 def send(chat_id, text):
     api("sendMessage", {"chat_id": chat_id, "text": text})
 
 
-def get_chat_id():
-    updates = api(
-        "getUpdates",
-        {
-            "timeout": 0,
-            "allowed_updates": json.dumps(["message"]),
-        },
-    )
+def send_to_all(chat_ids):
+    if not chat_ids:
+        print("No recipients yet. Waiting for /start.")
+        return
 
-    candidates = []
-    for update in updates:
-        message = update.get("message", {})
-        text = message.get("text", "")
-        if text.startswith("/start"):
-            chat = message.get("chat", {})
-            if chat.get("id") is not None:
-                candidates.append((update.get("update_id", 0), chat["id"]))
+    message_pool = random.choices(
+        [MESSAGES, SURPRISE_MESSAGES],
+        weights=[3, 1],
+        k=1,
+    )[0]
+    text = random.choice(message_pool)
 
-    if not candidates:
-        return None
+    active_chat_ids = set()
+    for chat_id in sorted(chat_ids):
+        try:
+            send(chat_id, text)
+            active_chat_ids.add(chat_id)
+            print(f"Sent to {chat_id}")
+        except RuntimeError as exc:
+            print(f"Could not send to {chat_id}: {exc}")
 
-    return candidates[-1][1]
+    save_chat_ids(active_chat_ids)
 
 
 def health_check():
@@ -176,16 +252,13 @@ if __name__ == "__main__":
         health_check()
         raise SystemExit(0)
 
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    chat_ids = load_chat_ids()
+    new_chat_ids = collect_new_chats()
 
-    if not chat_id:
-        chat_id = get_chat_id()
-        if chat_id is not None:
-            save_chat_id(chat_id)
+    if new_chat_ids:
+        before = len(chat_ids)
+        chat_ids.update(new_chat_ids)
+        if len(chat_ids) != before:
+            save_chat_ids(chat_ids)
 
-    if not chat_id:
-        print("No /start found yet. The bot is waiting for the recipient.")
-        raise SystemExit(0)
-
-    message_pool = random.choices(\n        [MESSAGES, SURPRISE_MESSAGES],\n        weights=[3, 1],\n        k=1,\n    )[0]\n    send(chat_id, random.choice(message_pool))
-    print("Cute message sent 💕")
+    send_to_all(chat_ids)
