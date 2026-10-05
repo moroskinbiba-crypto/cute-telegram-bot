@@ -131,9 +131,16 @@ async function removeSubscriber(env, chatId) {
   });
 }
 
-async function getSubscribers(env) {
-  const response = await subscribers(env).fetch("https://do/list");
-  return response.json();
+async function isSubscriber(env, chatId) {
+  const response = await subscribers(env).fetch(
+    "https://do/is-subscriber?chatId=" + encodeURIComponent(String(chatId)),
+  );
+  const data = await response.json();
+  return Boolean(data.subscribed);
+}
+
+async function sendCuteMessage(env, chatId, text = randomMessage()) {
+  return sendMenu(env, chatId, text);
 }
 
 async function getWebhookSecret(env) {
@@ -173,14 +180,18 @@ async function webhookUpdate(request, env) {
       callback_query_id: callback.id,
     });
 
-    await addSubscriber(env, chatId);
+    if (!(await isSubscriber(env, chatId))) {
+      await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
+        chat_id: chatId,
+        text: "Я больше не подписан на тебя 💛 Нажми /start, чтобы снова получать сообщения.",
+      });
+      return Response.json({ ok: true });
+    }
+
     if (callback.data === "frequency") {
       await sendFrequencyMenu(env, chatId);
     } else if (callback.data === "now") {
-      await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-        chat_id: chatId,
-        text: randomMessage(),
-      });
+      await sendCuteMessage(env, chatId);
     } else if (callback.data?.startsWith("freq:")) {
       const minutes = Number(callback.data.slice(5));
       if ([30, 60, 180].includes(minutes)) {
@@ -215,16 +226,9 @@ async function webhookUpdate(request, env) {
   if (text.startsWith("/start")) {
     await sendMenu(env, chatId, "Привет, Мурочка 💕");
   } else if (text.startsWith("/now")) {
-    await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-      chat_id: chatId,
-      text: randomMessage(),
-    });
-    await sendMenu(env, chatId);
+    await sendCuteMessage(env, chatId);
   } else {
-    await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-      chat_id: chatId,
-      text: randomMessage(),
-    });
+    await sendCuteMessage(env, chatId);
   }
 
   return Response.json({ ok: true });
@@ -235,10 +239,7 @@ async function broadcast(env) {
 
   for (const chatId of chatIds) {
     try {
-      await telegram(env.TELEGRAM_BOT_TOKEN, "sendMessage", {
-        chat_id: chatId,
-        text: randomMessage(),
-      });
+      await sendCuteMessage(env, chatId);
       await markSent(env, chatId);
     } catch (error) {
       if (error.telegramStatus === 403) {
@@ -278,10 +279,10 @@ export default {
     return new Response("Not found", { status: 404 });
   },
 
-  async scheduled(controller, env, ctx) {
+  async scheduled(_controller, env, ctx) {
     ctx.waitUntil(
       (async () => {
-        await ensureWebhook(env, new URL(controller.cron ? "https://cute-telegram-bot.dssmirnov2.workers.dev" : "https://cute-telegram-bot.dssmirnov2.workers.dev").origin);
+        await ensureWebhook(env, "https://cute-telegram-bot.dssmirnov2.workers.dev");
         await broadcast(env);
       })(),
     );
@@ -300,6 +301,12 @@ export class Subscribers extends DurableObject {
     if (request.method === "POST" && url.pathname === "/add") {
       const { chatId } = await request.json();
       await this.ctx.storage.put(`subscriber:${chatId}`, true);
+      if ((await this.ctx.storage.get(`frequency:${chatId}`)) === undefined) {
+        await this.ctx.storage.put(`frequency:${chatId}`, 180);
+      }
+      if ((await this.ctx.storage.get(`lastSent:${chatId}`)) === undefined) {
+        await this.ctx.storage.put(`lastSent:${chatId}`, Date.now());
+      }
       return Response.json({ ok: true });
     }
 
@@ -309,10 +316,10 @@ export class Subscribers extends DurableObject {
       return Response.json({ ok: true });
     }
 
-    if (request.method === "GET" && url.pathname === "/list") {
-      const entries = await this.ctx.storage.list({ prefix: "subscriber:" });
-      const chatIds = [...entries.keys()].map((key) => key.slice("subscriber:".length));
-      return Response.json(chatIds);
+    if (request.method === "GET" && url.pathname === "/is-subscriber") {
+      const chatId = url.searchParams.get("chatId");
+      const subscribed = chatId ? Boolean(await this.ctx.storage.get(`subscriber:${chatId}`)) : false;
+      return Response.json({ subscribed });
     }
 
     if (request.method === "POST" && url.pathname === "/frequency") {
@@ -329,7 +336,12 @@ export class Subscribers extends DurableObject {
       for (const key of entries.keys()) {
         const chatId = key.slice("subscriber:".length);
         const frequency = Number(await this.ctx.storage.get(`frequency:${chatId}`)) || 180;
-        const lastSent = Number(await this.ctx.storage.get(`lastSent:${chatId}`)) || 0;
+        let lastSent = Number(await this.ctx.storage.get(`lastSent:${chatId}`));
+        if (!Number.isFinite(lastSent) || lastSent <= 0) {
+          await this.ctx.storage.put(`frequency:${chatId}`, frequency);
+          await this.ctx.storage.put(`lastSent:${chatId}`, now);
+          lastSent = now;
+        }
         if (now - lastSent >= frequency * 60 * 1000) due.push(chatId);
       }
       return Response.json(due);
